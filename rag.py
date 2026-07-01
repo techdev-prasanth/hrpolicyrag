@@ -5,11 +5,14 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface.embeddings  import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore, RetrievalMode
 import os
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate,MessagesPlaceholder
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain.chat_models import init_chat_model
+from langchain.messages import HumanMessage,AIMessage,SystemMessage
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
 load = load_dotenv(override=True)
 
@@ -19,30 +22,33 @@ def format_docs(docs):
 
 
 
+store = {}
+
+def store_memory(session_id):
+    if session_id not in store:
+        store[session_id] = InMemoryChatMessageHistory()
+    return store[session_id]
+
+
+
 def base():
-
-    user_input = input(str("Ask HR questioons: ")).strip()
-
-    if len(user_input) < 0:
-        print("Please enter something.") 
-
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2-preview")
 
         vector_store = QdrantVectorStore.from_existing_collection(
-            embedding=embeddings,
-            url = os.getenv("QDRANT_URL"),
-            api_key=os.getenv("QDRANT_API_KEY"),
-            collection_name="company_docs",
-            prefer_grpc=True
-        )
+                embedding=embeddings,
+                url = os.getenv("QDRANT_URL"),
+                api_key=os.getenv("QDRANT_API_KEY"),
+                collection_name="company_docs",
+                prefer_grpc=True
+            )
 
         retriever = vector_store.as_retriever(
             search_kwargs={"k": 3}
         )
 
         prompt = ChatPromptTemplate.from_messages(
-            [
+        [
                 (
                     "system",
                     """
@@ -72,6 +78,7 @@ def base():
         - Company Procedures
         - Official Guidelines
         - Documents available in the knowledge base
+        - User's Chat history , you can tell their details
 
         2. Never answer general knowledge questions.
 
@@ -193,6 +200,8 @@ def base():
 
         If a policy is missing, state that it was not found.
 
+        
+
         ========================
         COMPANY KNOWLEDGE
         ========================
@@ -200,36 +209,50 @@ def base():
         {context}
                     """
                 ),
+                MessagesPlaceholder(variable_name="history"),
                 (
                     "human",
                     "{user_input}"
                 ),
             ]
         )
+        llm = init_chat_model(model="groq:llama-3.3-70b-versatile",temperature=0.1)
 
-
-
-        llm = init_chat_model(model="groq:qwen/qwen3-32b",temperature=0.1)
-
-
-        chain = (
-            {"context": retriever | format_docs, 
-            "user_input" : RunnablePassthrough()
-            }
-            | prompt
-            | llm
-            | StrOutputParser()
-
+        chain =  prompt | llm | StrOutputParser()
+            
+        
+        store_memory_chain = RunnableWithMessageHistory(
+            chain,
+            store_memory,
+            input_messages_key="user_input",
+            history_messages_key="history"
         )
+        while True:
+            user_input = input(str("Ask HR questioons: ")).strip()
 
+            if user_input.lower() == "q":
+                print("Bye")
+                break
 
-        final_rag_result = chain.invoke(user_input)
+            if not user_input:
+                print("Please enter a valid question.")
+                continue
 
-
-        print(final_rag_result)
-
+            try:
+                docs = retriever.invoke(user_input)
+                context = format_docs(docs)
+                final_rag_result = store_memory_chain.invoke(
+                    {"user_input":user_input,"context":context},
+                    config={"configurable":{"session_id":"user1"}}
+                )
+                print(final_rag_result)
+            except Exception as e:
+                print("Something went wrong",e)
     except Exception as e:
-        print("Something went wrong",e)
+            print("Initializtion Failed",e)
 
 
-base()
+
+if __name__ == "__main__":
+    base()
+    
