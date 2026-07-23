@@ -1,14 +1,14 @@
-from tasks import add,run
+from qdrant_client import QdrantClient
+import os
+from dotenv import load_dotenv
 
 
-print("File has been strated .......")
-result = add.delay(2, 3)
+print(os.getenv("QDRANT_URL"))
+print(os.getenv("QDRANT_API_KEY"))
+client = QdrantClient(
+    url=os.getenv("QDRANT_URL"),
+    api_key=os.getenv("QDRANT_API_KEY"),
+    prefer_grpc=False,
+)
 
-print(result.id)
-print(result.get())
-print("add func called",result)
-
-mrun = run.delay()
-
-print(mrun)
-print("mrun func called",mrun)
+print(client.get_collections())
